@@ -1,0 +1,13 @@
+[build]
+  command = "echo 'no build'"
+
+name = "bouncie-house-api"
+type = "javascript"
+
+# Replace with your Cloudflare account id
+account_id = "REPLACE_WITH_ACCOUNT_ID"
+
+workers_dev = true
+
+route = ""
+zone_id = ""
