@@ -1,0 +1,33 @@
+name = "bouncie-house"
+main = "deploy/worker.js"
+compatibility_date = "2025-09-26"
+
+# Replace with your Cloudflare account id
+account_id = "REPLACE_WITH_ACCOUNT_ID"
+
+workers_dev = true
+
+[build]
+  command = "npm run build"
+
+# Optional: publish static frontend assets as a Workers Site from ./dist
+[site]
+  bucket = "./dist"
+  entry-point = "workers-site"
+
+# Bindings placeholders (replace names with your actual resources)
+[[r2_buckets]]
+binding = "ASSETS_R2"
+bucket_name = "bouncie-assets"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "bouncie_db"
+
+[durable_objects]
+bindings = [
+  { name = "SESSIONS_DO", class_name = "Sessions" }
+]
+
+[vars]
+JWT_SECRET = "REPLACE_WITH_JWT_SECRET"
