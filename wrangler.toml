@@ -31,3 +31,23 @@ bindings = [
 
 [vars]
 JWT_SECRET = "REPLACE_WITH_JWT_SECRET"
+
+[env.production]
+account_id = "REPLACE_WITH_ACCOUNT_ID"
+workers_dev = false
+
+[[env.production.r2_buckets]]
+binding = "ASSETS_R2"
+bucket_name = "bouncie-assets"
+
+[[env.production.d1_databases]]
+binding = "DB"
+database_name = "bouncie_db"
+
+[env.production.vars]
+JWT_SECRET = "REPLACE_WITH_JWT_SECRET"
+
+[env.dev]
+account_id = "REPLACE_WITH_ACCOUNT_ID"
+workers_dev = true
+
