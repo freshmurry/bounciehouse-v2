@@ -8,14 +8,18 @@ export class Sessions {
   // Simple fetch handler to demonstrate storing JSON session data
   async fetch(request) {
     const url = new URL(request.url);
-    if (request.method === 'POST' && url.pathname === '/session') {
+    // POST /session/<token>  -> store data for token
+    if (request.method === 'POST' && url.pathname.startsWith('/session/')) {
+      const token = url.pathname.replace('/session/', '');
       const data = await request.json().catch(() => ({}));
-      await this.state.storage.put('data', data);
+      await this.state.storage.put(token, data);
       return new Response(JSON.stringify({ ok: true }), { status: 200, headers: { 'Content-Type': 'application/json' } });
     }
 
-    if (request.method === 'GET' && url.pathname === '/session') {
-      const data = await this.state.storage.get('data');
+    // GET /session/<token> -> retrieve data
+    if (request.method === 'GET' && url.pathname.startsWith('/session/')) {
+      const token = url.pathname.replace('/session/', '');
+      const data = await this.state.storage.get(token);
       return new Response(JSON.stringify(data || null), { status: 200, headers: { 'Content-Type': 'application/json' } });
     }
 

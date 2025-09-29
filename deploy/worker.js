@@ -1,7 +1,7 @@
 // Module-style Cloudflare Worker with bindings for R2, D1/D2, Durable Objects and JWT auth skeleton.
 // This file acts as a starting point — replace the mocked logic with production-grade implementations.
 
-import { createHmac } from 'crypto';
+// Use Web Crypto (global `crypto.subtle`) for HMAC signing/verification in Cloudflare Workers
 
 /**
  * Expected bindings on the `env` param:
@@ -41,19 +41,54 @@ async function handleApi(request, env, ctx) {
   if (url.pathname === '/api/auth/login') {
     const body = await readJson(request) || {};
     const { email, password } = body;
+    // TODO: validate against DB and hashed password (argon2). For now accept non-empty credentials.
     if (email && password) {
-      // In production, verify password via D1/D2 and hash; here we create a signed JWT-like token for demo
-      const token = signToken({ sub: email }, env.JWT_SECRET || 'dev-secret');
-      return json({ token, user: { email, name: 'User' } });
+      // create access token (short lived) and refresh token stored in Durable Object
+      const accessExp = Math.floor(Date.now() / 1000) + (15 * 60); // 15 minutes
+      const accessToken = await signJWT({ sub: email }, env.JWT_SECRET || 'dev-secret', accessExp);
+
+      // create refresh token (random) and store in Sessions DO with longer expiry
+      const refreshToken = generateRandomToken();
+      const refreshExp = Date.now() + (30 * 24 * 60 * 60 * 1000); // 30 days
+      // store in Sessions DO
+      if (env.SESSIONS_DO) {
+        const id = env.SESSIONS_DO.idFromName('sessions');
+        const stub = env.SESSIONS_DO.get(id);
+        await stub.fetch(new Request('https://sessions/session/' + refreshToken, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email, expiresAt: refreshExp })
+        }));
+      }
+
+      return json({ access_token: accessToken, token_type: 'Bearer', expires_in: 15 * 60, refresh_token: refreshToken, user: { email, name: 'User' } });
     }
     return new Response('Invalid credentials', { status: 401 });
+  }
+
+  if (url.pathname === '/api/auth/refresh') {
+    // body: { refresh_token }
+    const body = await readJson(request) || {};
+    const { refresh_token } = body;
+    if (!refresh_token) return new Response('Missing refresh_token', { status: 400 });
+    if (!env.SESSIONS_DO) return new Response('Sessions DO not configured', { status: 500 });
+    const id = env.SESSIONS_DO.idFromName('sessions');
+    const stub = env.SESSIONS_DO.get(id);
+    const res = await stub.fetch(new Request('https://sessions/session/' + refresh_token));
+    if (!res.ok) return new Response('Invalid refresh token', { status: 401 });
+    const data = await res.json().catch(() => null);
+    if (!data || !data.email || Date.now() > (data.expiresAt || 0)) return new Response('Refresh token expired', { status: 401 });
+    // issue new access token
+    const accessExp = Math.floor(Date.now() / 1000) + (15 * 60);
+    const accessToken = await signJWT({ sub: data.email }, env.JWT_SECRET || 'dev-secret', accessExp);
+    return json({ access_token: accessToken, token_type: 'Bearer', expires_in: 15 * 60 });
   }
 
   if (url.pathname === '/api/auth/me') {
     const auth = request.headers.get('Authorization') || '';
     if (!auth) return json(null);
     const token = auth.replace('Bearer ', '');
-    const payload = verifyToken(token, env.JWT_SECRET || 'dev-secret');
+    const payload = await verifyJWT(token, env.JWT_SECRET || 'dev-secret');
     if (!payload) return new Response('Invalid token', { status: 401 });
     return json({ email: payload.sub, name: payload.name || 'User' });
   }
@@ -97,4 +132,51 @@ function verifyToken(token, secret) {
   } catch (e) {
     return null;
   }
+}
+
+// --- New: Web Crypto based JWT helpers (HS256-like) ---
+async function importSecretKey(secret) {
+  const enc = new TextEncoder().encode(secret);
+  return await crypto.subtle.importKey('raw', enc, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign', 'verify']);
+}
+
+function base64url(buf) {
+  // buf is ArrayBuffer or string
+  let b64;
+  if (typeof buf === 'string') b64 = btoa(buf);
+  else b64 = btoa(String.fromCharCode(...new Uint8Array(buf)));
+  return b64.replace(/=+$/g, '').replace(/\+/g, '-').replace(/\//g, '_');
+}
+
+async function signJWT(payload, secret, exp) {
+  const header = { alg: 'HS256', typ: 'JWT' };
+  const body = { ...payload, exp };
+  const data = base64url(JSON.stringify(header)) + '.' + base64url(JSON.stringify(body));
+  const key = await importSecretKey(secret);
+  const sigBuf = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(data));
+  return data + '.' + base64url(sigBuf);
+}
+
+async function verifyJWT(token, secret) {
+  try {
+    const parts = token.split('.');
+    if (parts.length !== 3) return null;
+    const [headerB64, bodyB64, sigB64] = parts;
+    const data = headerB64 + '.' + bodyB64;
+    const key = await importSecretKey(secret);
+    const sigBuf = Uint8Array.from(atob(sigB64.replace(/-/g, '+').replace(/_/g, '/')).split('').map(c => c.charCodeAt(0)));
+    const ok = await crypto.subtle.verify('HMAC', key, sigBuf, new TextEncoder().encode(data));
+    if (!ok) return null;
+    const bodyJson = JSON.parse(decodeURIComponent(escape(atob(bodyB64.replace(/-/g, '+').replace(/_/g, '/')))));
+    if (bodyJson.exp && Math.floor(Date.now() / 1000) > bodyJson.exp) return null;
+    return bodyJson;
+  } catch (e) {
+    return null;
+  }
+}
+
+function generateRandomToken() {
+  // 32-byte random token hex
+  const arr = crypto.getRandomValues(new Uint8Array(32));
+  return Array.from(arr).map(b => b.toString(16).padStart(2, '0')).join('');
 }
